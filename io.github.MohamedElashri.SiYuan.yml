@@ -1,0 +1,69 @@
+app-id: io.github.MohamedElashri.SiYuan
+runtime: org.freedesktop.Platform
+runtime-version: &runtime-version '25.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: *runtime-version
+command: start-siyuan.sh
+finish-args:
+  - --device=dri
+  - --persist=SiYuan
+  - --persist=.config/siyuan
+  - --persist=.config/SiYuan
+  - --persist=.config/SiYuan-Electron
+  # Allow Siyuan to read media files from host
+  - --filesystem=xdg-pictures:ro
+  - --filesystem=xdg-videos:ro
+  - --filesystem=xdg-music:ro
+  # Allow users to export documents and create new workspace
+  # to ~/Desktop, ~/Downloads and ~/Documents
+  - --filesystem=xdg-desktop
+  - --filesystem=xdg-download
+  - --filesystem=xdg-documents
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # To fix cursor scaling on wayland
+  - --env=XCURSOR_PATH=/run/host/user-share/icons:/run/host/share/icons
+modules:
+  - name: siyuan
+    buildsystem: simple
+    build-commands:
+      - mv "siyuan" ${FLATPAK_DEST}/siyuan
+      - rm ${FLATPAK_DEST}/siyuan/chrome-sandbox
+      # To allow separate locales
+      # https://searchfox.org/mozilla-central/rev/8a4f55bc09ffc5c25dcb4586c51ae4a9fee77b4c/taskcluster/docker/firefox-flatpak/runme.sh#131-133
+      - |
+        for lang in ${FLATPAK_DEST}/siyuan/locales/*.pak
+        do
+          locale="$(basename -s .pak $lang)"
+          install -Dm644 -t "${FLATPAK_DEST}/share/runtime/locale/${locale%%-*}/" "$lang"
+          ln -sf "${FLATPAK_DEST}/share/runtime/locale/${locale%%-*}/$(basename $lang)" "${FLATPAK_DEST}/siyuan/locales/$(basename $lang)"
+        done
+      - install -Dm644 "${FLATPAK_DEST}/siyuan/resources/stage/icon-large.png" "${FLATPAK_DEST}/share/icons/hicolor/512x512/apps/${FLATPAK_ID}.png"
+      - install -Dm644 io.github.MohamedElashri.SiYuan.desktop "${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop"
+      - install -Dm644 io.github.MohamedElashri.SiYuan.metainfo.xml /app/share/metainfo/$FLATPAK_ID.metainfo.xml
+      - install -Dm755 start-siyuan.sh /app/bin/start-siyuan.sh
+    sources:
+      # Fork builds ship everything inside a siyuan-<version>-linux/ top dir;
+      # strip it so the layout matches the build-commands above.
+      - type: archive
+        dest: siyuan
+        only-arches: [x86_64]
+        strip-components: 1
+        url: https://github.com/MohamedElashri/siyuan-patch/releases/download/v3.8.9/siyuan-v3.8.9-linux.tar.gz
+        sha256: 7dcd72567af9b32f380e593796ede5d6c348c49507c144b6edfed069195e8569
+      - type: archive
+        dest: siyuan
+        only-arches: [aarch64]
+        strip-components: 1
+        url: https://github.com/MohamedElashri/siyuan-patch/releases/download/v3.8.9/siyuan-v3.8.9-linux-arm64.tar.gz
+        sha256: dc45a44f4499a6066358cf672798add03548a579cd4195ec5a3d7c0c69030f4f
+      - type: file
+        path: io.github.MohamedElashri.SiYuan.desktop
+      - type: file
+        path: io.github.MohamedElashri.SiYuan.metainfo.xml
+      - type: file
+        path: start-siyuan.sh

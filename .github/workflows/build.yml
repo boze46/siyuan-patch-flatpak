@@ -1,0 +1,151 @@
+name: Build and publish flatpak repo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '17 21 * * *'
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: build-publish
+  cancel-in-progress: false
+
+env:
+  APP_ID: io.github.MohamedElashri.SiYuan
+  FORK_REPO: MohamedElashri/siyuan-patch
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check fork release and bump manifest
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          LATEST_TAG=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/latest" | jq -r .tag_name)
+          VERSION="${LATEST_TAG#v}"
+          CURRENT=$(grep -m1 -oE 'siyuan-v[0-9.]+-linux\.tar\.gz' "$APP_ID.yml" | grep -oE '[0-9.]+')
+          echo "fork latest: $LATEST_TAG, manifest currently: $CURRENT"
+
+          # The fork re-publishes the same tag with rebuilt assets (release-cron),
+          # so compare content hashes, not just the version number.
+          LIVE_X=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/tags/${LATEST_TAG}" | jq -r '.assets[] | select(.name == "siyuan-v'"${VERSION}"'-linux.tar.gz") | .digest' | cut -d: -f2)
+          LIVE_A=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/tags/${LATEST_TAG}" | jq -r '.assets[] | select(.name == "siyuan-v'"${VERSION}"'-linux-arm64.tar.gz") | .digest' | cut -d: -f2)
+          CUR_X=$(sed -n 's/^        sha256: \([0-9a-f]*\)$/\1/p' "$APP_ID.yml" | sed -n 1p)
+          CUR_A=$(sed -n 's/^        sha256: \([0-9a-f]*\)$/\1/p' "$APP_ID.yml" | sed -n 2p)
+          PUBLISHED_AT=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/tags/${LATEST_TAG}" | jq -r .published_at | cut -dT -f1)
+
+          if [ "$VERSION" = "$CURRENT" ] && [ "$LIVE_X" = "$CUR_X" ] && [ "$LIVE_A" = "$CUR_A" ]; then
+            echo "unchanged"
+            {
+              echo "version=$VERSION"
+              echo "changed=false"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$LIVE_X" ] || [ -z "$LIVE_A" ]; then
+            echo "::error::could not resolve fork tarball assets for $LATEST_TAG"
+            exit 1
+          fi
+
+          python3 "$VERSION" "$LIVE_X" "$LIVE_A" "$PUBLISHED_AT" <<'EOF'
+          import os, re, sys
+
+          version, sha_x, sha_a, date = sys.argv[1:5]
+          app_id = os.environ["APP_ID"]
+
+          manifest = open(f"{app_id}.yml").read()
+          manifest = re.sub(r"releases/download/v[\d.]+", f"releases/download/v{version}", manifest)
+          manifest = re.sub(
+              rf"(siyuan-v{re.escape(version)}-linux\.tar\.gz\n\s*sha256: )[0-9a-f]+",
+              rf"\g<1>{sha_x}", manifest)
+          manifest = re.sub(
+              rf"(siyuan-v{re.escape(version)}-linux-arm64\.tar\.gz\n\s*sha256: )[0-9a-f]+",
+              rf"\g<1>{sha_a}", manifest)
+          open(f"{app_id}.yml", "w").write(manifest)
+
+          meta = open(f"{app_id}.metainfo.xml").read()
+          meta = re.sub(
+              r'<release version="[\d.]+" date="[\d-]+">',
+              f'<release version="{version}" date="{date}">', meta, count=1)
+          open(f"{app_id}.metainfo.xml", "w").write(meta)
+          EOF
+
+          echo "updated manifest to v$VERSION"
+          {
+            echo "version=$VERSION"
+            echo "changed=true"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install tooling
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build app
+        run: |
+          flatpak-builder --user --disable-rofiles-fuse --no-debuginfo \
+            --install-deps-from=flathub --force-clean \
+            --repo=repo build "$APP_ID.yml"
+          flatpak build-update-repo repo
+
+      - name: Build bundle
+        run: |
+          flatpak build-bundle --runtime-repo=https://flathub.org/repo/ \
+            repo "siyuan-patch-${{ steps.check.outputs.version }}-x86_64.flatpak" "$APP_ID"
+
+      - name: Commit manifest update
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Update to v${{ steps.check.outputs.version }}"
+          git push
+
+      - name: Publish release bundle
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.check.outputs.version }}
+          name: SiYuan Patch v${{ steps.check.outputs.version }}
+          files: siyuan-patch-*.flatpak
+          body: Auto-built from [MohamedElashri/siyuan-patch](https://github.com/MohamedElashri/siyuan-patch) v${{ steps.check.outputs.version }}
+
+      - name: Stage flatpak repo for Pages
+        run: |
+          mkdir publish
+          cp -r repo publish/repo
+          cat > publish/siyuan-patch.flatpakrepo <<EOF
+          [Flatpak Repo]
+          Version=1
+          Url=https://boze46.github.io/siyuan-patch-flatpak/repo
+          Title=SiYuan Patch
+          Comment=Community-patched SiYuan builds
+          Description=Self-built flatpak repo for MohamedElashri/siyuan-patch
+          DefaultBranch=master
+          EOF
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: publish
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=SiYuan Patch
+Comment=A privacy-first personal knowledge management system (community patched build)
+Exec=start-siyuan.sh %u
+Icon=io.github.MohamedElashri.SiYuan
+StartupWMClass=SiYuan
+Type=Application
+Categories=Utility;TextTools;Office;WordProcessor;Spreadsheet;TextEditor;
+X-GNOME-SingleWindow=true
+X-SingleMainWindow=true
