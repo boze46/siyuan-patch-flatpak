@@ -62,8 +62,12 @@ jobs:
             echo "::error::could not resolve fork tarball assets for $LATEST_TAG"
             exit 1
           fi
+          if ! [[ "$LIVE_X" =~ ^[0-9a-f]{64}$ ]] || ! [[ "$LIVE_A" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::fork asset digests look invalid: X=$LIVE_X A=$LIVE_A"
+            exit 1
+          fi
 
-          python3 "$VERSION" "$LIVE_X" "$LIVE_A" "$PUBLISHED_AT" <<'EOF'
+          python3 - "$VERSION" "$LIVE_X" "$LIVE_A" "$PUBLISHED_AT" <<'EOF'
           import os, re, sys
 
           version, sha_x, sha_a, date = sys.argv[1:5]
