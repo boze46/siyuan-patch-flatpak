@@ -38,7 +38,7 @@ jobs:
 
           LATEST_TAG=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/latest" | jq -r .tag_name)
           VERSION="${LATEST_TAG#v}"
-          CURRENT=$(grep -m1 -oE 'siyuan-v[0-9.]+-linux\.tar\.gz' "$APP_ID.yml" | grep -oE '[0-9.]+')
+          CURRENT=$(grep -m1 -oE 'siyuan-v[0-9.]+-linux\.tar\.gz' "$APP_ID.yml" | sed 's/^siyuan-v//; s/-linux\.tar\.gz$//')
           echo "fork latest: $LATEST_TAG, manifest currently: $CURRENT"
 
           # The fork re-publishes the same tag with rebuilt assets (release-cron),
@@ -104,7 +104,7 @@ jobs:
 
       - name: Build app
         run: |
-          flatpak-builder --user --disable-rofiles-fuse --no-debuginfo \
+          flatpak-builder --user --disable-rofiles-fuse \
             --install-deps-from=flathub --force-clean \
             --repo=repo build "$APP_ID.yml"
           flatpak build-update-repo repo
@@ -120,7 +120,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Update to v${{ steps.check.outputs.version }}"
+          git diff --cached --quiet || git commit -m "Update to v${{ steps.check.outputs.version }}"
           git push
 
       - name: Publish release bundle
