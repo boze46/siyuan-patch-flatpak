@@ -36,18 +36,25 @@ jobs:
         run: |
           set -euo pipefail
 
-          LATEST_TAG=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/latest" | jq -r .tag_name)
+          api() { curl -sfL --retry 5 --retry-all-errors --retry-delay 5 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" "$@"; }
+
+          # Authenticate: unauthenticated calls share a 60 req/h per-IP budget on
+          # hosted runners and intermittently 403 (curl exit 22) mid-schedule.
+          RELEASE=$(api "https://api.github.com/repos/${FORK_REPO}/releases/latest")
+          LATEST_TAG=$(jq -r .tag_name <<<"$RELEASE")
           VERSION="${LATEST_TAG#v}"
           CURRENT=$(grep -m1 -oE 'siyuan-v[0-9.]+-linux\.tar\.gz' "$APP_ID.yml" | sed 's/^siyuan-v//; s/-linux\.tar\.gz$//')
           echo "fork latest: $LATEST_TAG, manifest currently: $CURRENT"
 
           # The fork re-publishes the same tag with rebuilt assets (release-cron),
           # so compare content hashes, not just the version number.
-          LIVE_X=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/tags/${LATEST_TAG}" | jq -r '.assets[] | select(.name == "siyuan-v'"${VERSION}"'-linux.tar.gz") | .digest' | cut -d: -f2)
-          LIVE_A=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/tags/${LATEST_TAG}" | jq -r '.assets[] | select(.name == "siyuan-v'"${VERSION}"'-linux-arm64.tar.gz") | .digest' | cut -d: -f2)
+          LIVE_X=$(jq -r --arg n "siyuan-v${VERSION}-linux.tar.gz" '.assets[] | select(.name == $n) | .digest // ""' <<<"$RELEASE" | cut -d: -f2)
+          LIVE_A=$(jq -r --arg n "siyuan-v${VERSION}-linux-arm64.tar.gz" '.assets[] | select(.name == $n) | .digest // ""' <<<"$RELEASE" | cut -d: -f2)
           CUR_X=$(sed -n 's/^        sha256: \([0-9a-f]*\)$/\1/p' "$APP_ID.yml" | sed -n 1p)
           CUR_A=$(sed -n 's/^        sha256: \([0-9a-f]*\)$/\1/p' "$APP_ID.yml" | sed -n 2p)
-          PUBLISHED_AT=$(curl -sf "https://api.github.com/repos/${FORK_REPO}/releases/tags/${LATEST_TAG}" | jq -r .published_at | cut -dT -f1)
+          PUBLISHED_AT=$(jq -r .published_at <<<"$RELEASE" | cut -dT -f1)
 
           if [ "$VERSION" = "$CURRENT" ] && [ "$LIVE_X" = "$CUR_X" ] && [ "$LIVE_A" = "$CUR_A" ]; then
             echo "unchanged"
@@ -73,15 +80,35 @@ jobs:
           version, sha_x, sha_a, date = sys.argv[1:5]
           app_id = os.environ["APP_ID"]
 
-          manifest = open(f"{app_id}.yml").read()
-          manifest = re.sub(r"releases/download/v[\d.]+", f"releases/download/v{version}", manifest)
-          manifest = re.sub(
-              rf"(siyuan-v{re.escape(version)}-linux\.tar\.gz\n\s*sha256: )[0-9a-f]+",
-              rf"\g<1>{sha_x}", manifest)
-          manifest = re.sub(
-              rf"(siyuan-v{re.escape(version)}-linux-arm64\.tar\.gz\n\s*sha256: )[0-9a-f]+",
-              rf"\g<1>{sha_a}", manifest)
-          open(f"{app_id}.yml", "w").write(manifest)
+          # Rewrite the version in the tag *and* in the archive filename. Patching
+          # only the tag produced download/v3.8.10/siyuan-v3.8.9-linux.tar.gz, which
+          # 404s and failed every run since 3.8.10 came out.
+          sha_for = {
+              f"siyuan-v{version}-linux.tar.gz": sha_x,
+              f"siyuan-v{version}-linux-arm64.tar.gz": sha_a,
+          }
+          name_re = re.compile(r"siyuan-v[\d.]+-linux(?:-arm64)?\.tar\.gz")
+          tag_re = re.compile(r"(/releases/download/v)[\d.]+(/)")
+
+          out, archive = [], None
+          for line in open(f"{app_id}.yml"):
+              m = name_re.search(line)
+              if m:
+                  archive = re.sub(r"siyuan-v[\d.]+", f"siyuan-v{version}", m.group(0))
+                  line = line[:m.start()] + archive + line[m.end():]
+              line = tag_re.sub(rf"\g<1>{version}\g<2>", line)
+              if archive and "sha256:" in line:
+                  line = re.sub(r"[0-9a-f]{64}", sha_for[archive], line)
+                  archive = None
+              out.append(line)
+          text = "".join(out)
+
+          for name, sha in sha_for.items():
+              if f"/download/v{version}/{name}" not in text:
+                  sys.exit(f"manifest rewrite failed: no url for {name}")
+              if sha not in text:
+                  sys.exit(f"manifest rewrite failed: sha256 for {name} not applied")
+          open(f"{app_id}.yml", "w").write(text)
 
           meta = open(f"{app_id}.metainfo.xml").read()
           meta = re.sub(
@@ -97,12 +124,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Install tooling
+        if: steps.check.outputs.changed == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends flatpak-builder elfutils
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
 
       - name: Build app
+        if: steps.check.outputs.changed == 'true'
         run: |
           flatpak-builder --user --disable-rofiles-fuse \
             --install-deps-from=flathub --force-clean \
@@ -110,6 +139,7 @@ jobs:
           flatpak build-update-repo repo
 
       - name: Build bundle
+        if: steps.check.outputs.changed == 'true'
         run: |
           flatpak build-bundle --runtime-repo=https://flathub.org/repo/ \
             repo "siyuan-patch-${{ steps.check.outputs.version }}-x86_64.flatpak" "$APP_ID"
@@ -124,6 +154,7 @@ jobs:
           git push
 
       - name: Publish release bundle
+        if: steps.check.outputs.changed == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.check.outputs.version }}
@@ -132,6 +163,7 @@ jobs:
           body: Auto-built from [MohamedElashri/siyuan-patch](https://github.com/MohamedElashri/siyuan-patch) v${{ steps.check.outputs.version }}
 
       - name: Stage flatpak repo for Pages
+        if: steps.check.outputs.changed == 'true'
         run: |
           mkdir publish
           cp -r repo publish/repo
@@ -146,10 +178,12 @@ jobs:
           EOF
 
       - name: Upload Pages artifact
+        if: steps.check.outputs.changed == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: publish
 
       - name: Deploy to GitHub Pages
+        if: steps.check.outputs.changed == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
