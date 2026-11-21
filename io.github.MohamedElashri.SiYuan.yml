@@ -53,14 +53,14 @@ modules:
         dest: siyuan
         only-arches: [x86_64]
         strip-components: 1
-        url: https://github.com/MohamedElashri/siyuan-patch/releases/download/v3.8.10/siyuan-v3.8.10-linux.tar.gz
-        sha256: 9df5d09e685967a78ce204affb21c75e0e670796e7b9f7b64008a951a5bb30c5
+        url: https://github.com/MohamedElashri/siyuan-patch/releases/download/v3.8.11/siyuan-v3.8.11-linux.tar.gz
+        sha256: 99da4755ab7da3e5225782358345dae09fb21518845692e58164ad65b64b1b9d
       - type: archive
         dest: siyuan
         only-arches: [aarch64]
         strip-components: 1
-        url: https://github.com/MohamedElashri/siyuan-patch/releases/download/v3.8.10/siyuan-v3.8.10-linux-arm64.tar.gz
-        sha256: 8b46b7fb32bdb89bcbe82818462f75dd97347601cd291be4cd332f3136ccde1a
+        url: https://github.com/MohamedElashri/siyuan-patch/releases/download/v3.8.11/siyuan-v3.8.11-linux-arm64.tar.gz
+        sha256: 59798f3b823c21ca67121efd06c34b09b79a442a602b1170a957345c98f40a0d
       - type: file
         path: io.github.MohamedElashri.SiYuan.desktop
       - type: file
